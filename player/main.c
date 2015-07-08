@@ -117,6 +117,11 @@ static const char def_config[] =
     "input-media-keys=no\n"
     "input-app-events=no\n"
     "stop-playback-on-init-failure=yes\n"
+    "\n"
+    "[opengl-hq]\n"
+    "vo=opengl\n"
+    "vo-defaults=opengl:scale=spline36:cscale=spline36:dscale=mitchell:"
+                       "dither-depth=auto:fancy-downscaling:sigmoid-upscaling\n"
 #if HAVE_ENCODING
     "\n"
     "[encoding]\n"

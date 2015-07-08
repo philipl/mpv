@@ -455,6 +455,12 @@ err_out:
     return -1;
 }
 
+static int preinit_hq(struct vo *vo)
+{
+    MP_WARN(vo, "Warning: --vo=opengl-hq is deprecated - use --profile=opengl-hq\n");
+    return preinit(vo);
+}
+
 #define OPT_BASE_STRUCT struct gl_priv
 static const struct m_option options[] = {
     OPT_FLAG("glfinish", use_glFinish, 0),
@@ -494,7 +500,7 @@ const struct vo_driver video_out_opengl_hq = {
     .description = "Extended OpenGL Renderer (high quality rendering preset)",
     .name = "opengl-hq",
     .caps = CAPS,
-    .preinit = preinit,
+    .preinit = preinit_hq,
     .query_format = query_format,
     .reconfig = reconfig,
     .control = control,
