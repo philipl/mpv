@@ -38,6 +38,8 @@ static int init_decoder(struct lavc_ctx *ctx, int fmt, int w, int h)
     if (mp_vdpau_handle_preemption(p->mpvdp, &p->preemption_counter) < 0)
         return 0;
 
+    p->mpvdp->is_hevc = ctx->hwdec_profile == FF_PROFILE_HEVC_MAIN;
+
     return av_vdpau_bind_context(ctx->avctx, p->mpvdp->vdp_device,
                                  p->mpvdp->get_proc_address,
                                  AV_HWACCEL_FLAG_IGNORE_LEVEL |

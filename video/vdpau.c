@@ -339,6 +339,9 @@ static struct mp_image *mp_vdpau_get_surface(struct mp_vdpau_ctx *ctx,
                                                         w, h, &e->osurface);
                     e->allocated = e->osurface != VDP_INVALID_HANDLE;
                 } else {
+                    if (ctx->is_hevc) {
+                        h *= 2;
+                    }
                     vdp_st = vdp->video_surface_create(ctx->vdp_device, chroma,
                                                     w, h, &e->surface);
                     e->allocated = e->surface != VDP_INVALID_HANDLE;

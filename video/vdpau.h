@@ -77,6 +77,7 @@ struct mp_vdpau_ctx {
     struct mp_vdpau_mixer *getimg_mixer;
     VdpOutputSurface getimg_surface;
     int getimg_w, getimg_h;
+    bool is_hevc;
 };
 
 struct mp_vdpau_ctx *mp_vdpau_create_device_x11(struct mp_log *log, Display *x11,

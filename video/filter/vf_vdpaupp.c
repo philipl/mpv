@@ -97,6 +97,8 @@ static bool output_field(struct vf_instance *vf, int pos, bool deint)
         frame->field = top_field_first ^ (pos & 1) ?
             VDP_VIDEO_MIXER_PICTURE_STRUCTURE_BOTTOM_FIELD:
             VDP_VIDEO_MIXER_PICTURE_STRUCTURE_TOP_FIELD;
+    } else if (p->ctx->is_hevc) {
+        frame->field = VDP_VIDEO_MIXER_PICTURE_STRUCTURE_TOP_FIELD;
     }
 
     frame->future[0] = ref_field(p, frame, pos - 1);
@@ -124,6 +126,11 @@ static bool output_field(struct vf_instance *vf, int pos, bool deint)
 static int filter_ext(struct vf_instance *vf, struct mp_image *mpi)
 {
     struct vf_priv_s *p = vf->priv;
+
+    if (p->ctx->is_hevc) {
+        p->opts.deint = 0;
+    }
+
     int maxbuffer = p->opts.deint >= 2 ? 3 : 2;
     bool eof = !mpi;
 
@@ -152,6 +159,9 @@ static int filter_ext(struct vf_instance *vf, struct mp_image *mpi)
     }
 
     bool deint = (mpi && (mpi->fields & MP_IMGFIELD_INTERLACED)) || !p->interlaced_only;
+    if (p->ctx->is_hevc) {
+        deint = false;
+    }
 
     while (1) {
         int current = p->prev_pos - 1;

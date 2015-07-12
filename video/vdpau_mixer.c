@@ -224,6 +224,10 @@ int mp_vdpau_mixer_render(struct mp_vdpau_mixer *mixer,
     struct vdp_functions *vdp = &mixer->ctx->vdp;
     VdpStatus vdp_st;
     VdpRect fallback_rect = {0, 0, video->w, video->h};
+    if (mixer->ctx->is_hevc) {
+        fallback_rect.y1 *= 2;
+        video_rect = &fallback_rect;
+    }
 
     if (!video_rect)
         video_rect = &fallback_rect;
@@ -252,6 +256,9 @@ int mp_vdpau_mixer_render(struct mp_vdpau_mixer *mixer,
         for (int n = 0; n < MP_VDP_HISTORY_FRAMES; n++)
             frame->past[n] = frame->future[n] = VDP_INVALID_HANDLE;
         frame->field = VDP_VIDEO_MIXER_PICTURE_STRUCTURE_FRAME;
+        if (mixer->ctx->is_hevc) {
+            frame->field = VDP_VIDEO_MIXER_PICTURE_STRUCTURE_TOP_FIELD;
+        }
     }
 
     if (!opts)
