@@ -76,6 +76,11 @@ Interface changes
       mapped versions of a color.
     - add --hdr-peak-decay-rate and --hdr-scene-threshold-low/high
     - add --tone-mapping-max-boost
+    - remove the special-case for the option "video-aspect". When video-aspect
+      is set to "0" or "-1", it will actually return those values, rather than
+      turning this into the effective video aspect with those settings. If
+      you need access to the effective video aspect, you can e.g. divide
+      `video-out-params/dw` by `video-out-params/dh`.
  --- mpv 0.29.0 ---
     - drop --opensles-sample-rate, as --audio-samplerate should be used if desired
     - drop deprecated --videotoolbox-format, --ff-aid, --ff-vid, --ff-sid,
