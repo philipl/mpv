@@ -805,10 +805,14 @@ video_output_features = [
                 "Aborting. If you really mean to compile without OpenGL " +
                 "video outputs use --disable-gl.",
     }, {
+        'name': '--libplacebo',
+        'desc': 'libplacebo support',
+        'func': check_pkg_config('libplacebo >= 1.7.0'),
+    }, {
         'name': '--vulkan',
         'desc':  'Vulkan context support',
-        # Lowest version tested, Ubuntu 16.04's
-        'func': check_pkg_config('vulkan >= 1.0.61'),
+        'deps': 'libplacebo',
+        'func': check_pkg_config('vulkan'),
     }, {
         'name': 'egl-helpers',
         'desc': 'EGL helper functions',
