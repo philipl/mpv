@@ -5164,6 +5164,14 @@ The following video options are currently all specific to ``--vo=gpu`` and
     linear
         Specifies the scale factor to use while stretching. Defaults to 1.0.
 
+``--tone-mapping-max-boost=<1.0..10.0>``
+    Upper limit for how much the tone mapping algorithm is allowed to boost
+    the average brightness by over-exposing the image. The default value of 1.0
+    allows no additional brightness boost. A value of 2.0 would allow
+    over-exposing by a factor of 2, and so on. Raising this setting can help
+    reveal details that would otherwise be hidden in dark scenes, but raising
+    it too high will make dark scenes appear unnaturally bright.
+
 ``--hdr-compute-peak=<auto|yes|no>``
     Compute the HDR peak and frame average brightness per-frame instead of
     relying on tagged metadata. These values are averaged over local regions as
@@ -5174,17 +5182,50 @@ The following video options are currently all specific to ``--vo=gpu`` and
     The special value ``auto`` (default) will enable HDR peak computation
     automatically if compute shaders and SSBOs are supported.
 
-``--tone-mapping-desaturate=<value>``
-    Apply desaturation for highlights. The parameter essentially controls the
-    steepness of the desaturation curve. The higher the parameter, the more
-    aggressively colors will be desaturated. This setting helps prevent
-    unnaturally blown-out colors for super-highlights, by (smoothly) turning
-    into white instead. This makes images feel more natural, at the cost of
-    reducing information about out-of-range colors.
+``--hdr-peak-decay-rate=<1.0..1000.0>``
+    The decay rate used for the HDR peak detection algorithm (default: 100.0).
+    This is only relevant when ``--hdr-compute-peak`` is enabled. Higher values
+    make the peak decay more slowly, leading to more stable values at the cost
+    of more "eye adaptation"-like effects (although this is mitigated somewhat
+    by ``--hdr-scene-threshold``). A value of 1.0 (the lowest possible) disables
+    all averaging, meaning each frame's value is used directly as measured,
+    but doing this is not recommended for "noisy" sources since it may lead
+    to excessive flicker. (In signal theory terms, this controls the time
+    constant "tau" of an IIR low pass filter)
 
-    The default of 0.5 provides a good balance. This value is weaker than the
-    ACES ODT curves' recommendation, but works better for most content in
-    practice. A setting of 0.0 disables this option.
+``--hdr-scene-threshold-low=<0.0..100.0>``, ``--hdr-scene-threshold-high=<0.0..100.0>``
+    The lower and upper thresholds (in dB) for a brightness difference
+    to be considered a scene change (default: 5.5 low, 10.0 high). This is only
+    relevant when ``--hdr-compute-peak`` is enabled. Normally, small
+    fluctuations in the frame brightness are compensated for by the peak
+    averaging mechanism, but for large jumps in the brightness this can result
+    in the frame remaining too bright or too dark for up to several seconds,
+    depending on the value of ``--hdr-peak-decay-rate``. To counteract this,
+    when the brightness between the running average and the current frame
+    exceeds the low threshold, mpv will make the averaging filter more
+    aggressive, up to the limit of the high threshold (at which point the
+    filter becomes instant).
+
+``--tone-mapping-desaturate=<0.0..1.0>``
+    Apply desaturation for highlights (default: 0.75). The parameter controls
+    the strength of the desaturation curve. A value of 0.0 completely disables
+    it, while a value of 1.0 means that overly bright colors will tend towards
+    being completely white. (This is not always the case, especially not for
+    highlights that are near primary colors)
+
+    Values in between apply progressively more/less aggressive desaturation.
+    This setting helps prevent unnaturally oversaturated colors for
+    super-highlights, by (smoothly) turning them into less saturated (per
+    channel tone mapped) colors instead. This makes images feel more natural,
+    at the cost of chromatic distortions for out-of-range colors. The default
+    value of 0.5 provides a good balance. Setting this to 0.0 preserves the
+    chromatic accuracy of the tone mapping process.
+
+``--tone-mapping-desaturate-exponent=<0.0..20.0>``
+    This setting controls the exponent of the desaturation curve, which
+    controls how bright a color needs to be in order to start being
+    desaturated. The default of 1.5 provides a reasonable balance.  Decreasing
+    this exponent makes the curve more aggressive.
 
 ``--gamut-warning``
     If enabled, mpv will mark all clipped/out-of-gamut pixels that exceed a
