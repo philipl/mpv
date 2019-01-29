@@ -195,6 +195,18 @@ error:
     return false;
 }
 
+bool ra_vk_ctx_resize(struct ra_ctx *ctx, int width, int height)
+{
+    struct priv *p = ctx->swapchain->priv;
+    struct mpvk_ctx *vk = p->vk;
+
+    bool ok = pl_swapchain_resize(p->swapchain, &width, &height);
+    ctx->vo->dwidth = width;
+    ctx->vo->dheight = height;
+
+    return ok;
+}
+
 static int color_depth(struct ra_swapchain *sw)
 {
     return 0; // TODO: implement this somehow?

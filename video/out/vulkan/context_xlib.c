@@ -73,15 +73,25 @@ error:
     return false;
 }
 
+static bool resize(struct ra_ctx *ctx)
+{
+    return ra_vk_ctx_resize(ctx, ctx->vo->dwidth, ctx->vo->dheight);
+}
+
 static bool xlib_reconfig(struct ra_ctx *ctx)
 {
     vo_x11_config_vo_window(ctx->vo);
-    return true;
+    return resize(ctx);
 }
 
 static int xlib_control(struct ra_ctx *ctx, int *events, int request, void *arg)
 {
-    return vo_x11_control(ctx->vo, events, request, arg);
+    int ret = vo_x11_control(ctx->vo, events, request, arg);
+    if (*events & VO_EVENT_RESIZE) {
+        if (!resize(ctx))
+            return VO_ERROR;
+    }
+    return ret;
 }
 
 static void xlib_wakeup(struct ra_ctx *ctx)

@@ -76,7 +76,7 @@ error:
     return false;
 }
 
-static void resize(struct ra_ctx *ctx)
+static bool resize(struct ra_ctx *ctx)
 {
     struct vo_wayland_state *wl = ctx->vo->wl;
 
@@ -86,9 +86,7 @@ static void resize(struct ra_ctx *ctx)
     const int32_t height = wl->scaling*mp_rect_h(wl->geometry);
 
     wl_surface_set_buffer_scale(wl->surface, wl->scaling);
-
-    wl->vo->dwidth  = width;
-    wl->vo->dheight = height;
+    return ra_vk_ctx_resize(ctx, width, height);
 }
 
 static bool wayland_vk_reconfig(struct ra_ctx *ctx)
@@ -102,8 +100,10 @@ static bool wayland_vk_reconfig(struct ra_ctx *ctx)
 static int wayland_vk_control(struct ra_ctx *ctx, int *events, int request, void *arg)
 {
     int ret = vo_wayland_control(ctx->vo, events, request, arg);
-    if (*events & VO_EVENT_RESIZE)
-        resize(ctx);
+    if (*events & VO_EVENT_RESIZE) {
+        if (!resize(ctx))
+            return VO_ERROR;
+    }
     return ret;
 }
 
