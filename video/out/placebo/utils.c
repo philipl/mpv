@@ -22,28 +22,41 @@ static const enum pl_log_level msg_lev_to_pl_log[MSGL_MAX+1] = {
     [MSGL_MAX]     = PL_LOG_ALL,
 };
 
+// translates log levels while probing
+static const enum pl_log_level probing_map(enum pl_log_level level)
+{
+    switch (level) {
+    case PL_LOG_FATAL:
+        return PL_LOG_ERR;
+
+    case PL_LOG_ERR:
+    case PL_LOG_WARN:
+        return PL_LOG_INFO;
+
+    default:
+        return level;
+    }
+}
+
 static void log_cb(void *priv, enum pl_log_level level, const char *msg)
 {
     struct mp_log *log = priv;
     mp_msg(log, pl_log_to_msg_lev[level], "%s\n", msg);
 }
 
-struct pl_context *mppl_ctx_create(void *tactx, struct mp_log *log)
+static void log_cb_probing(void *priv, enum pl_log_level level, const char *msg)
 {
-    log = mp_log_new(tactx, log, "libplacebo");
+    struct mp_log *log = priv;
+    mp_msg(log, pl_log_to_msg_lev[probing_map(level)], "%s\n", msg);
+}
+
+void mppl_ctx_set_log(struct pl_context *ctx, struct mp_log *log, bool probing)
+{
     assert(log);
 
-    struct pl_context *ctx;
-    ctx = pl_context_create(PL_API_VER, &(struct pl_context_params) {
-        .log_cb     = log_cb,
-        .log_level  = msg_lev_to_pl_log[mp_msg_level(log)],
-        .log_priv   = log,
+    pl_context_update(ctx, &(struct pl_context_params) {
+        .log_cb      = probing ? log_cb_probing : log_cb,
+        .log_level   = msg_lev_to_pl_log[mp_msg_level(log)],
+        .log_priv    = log,
     });
-
-    if (!ctx) {
-        talloc_free(log);
-        return NULL;
-    }
-
-    return ctx;
 }

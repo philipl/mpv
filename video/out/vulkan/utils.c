@@ -3,9 +3,12 @@
 
 bool mpvk_init(struct mpvk_ctx *vk, struct ra_ctx *ctx, const char *surface_ext)
 {
-    vk->ctx = mppl_ctx_create(ctx, ctx->log);
+    vk->ctx = pl_context_create(PL_API_VER, NULL);
     if (!vk->ctx)
         goto error;
+
+    vk->pl_log = mp_log_new(ctx, ctx->log, "libplacebo");
+    mppl_ctx_set_log(vk->ctx, vk->pl_log, true);
 
     const char *exts[] = {
         VK_KHR_SURFACE_EXTENSION_NAME,
@@ -21,6 +24,7 @@ bool mpvk_init(struct mpvk_ctx *vk, struct ra_ctx *ctx, const char *surface_ext)
     if (!vk->vkinst)
         goto error;
 
+    mppl_ctx_set_log(vk->ctx, vk->pl_log, false); // disable probing
     return true;
 
 error:
@@ -38,4 +42,5 @@ void mpvk_uninit(struct mpvk_ctx *vk)
 
     pl_vk_inst_destroy(&vk->vkinst);
     pl_context_destroy(&vk->ctx);
+    TA_FREEP(&vk->pl_log);
 }

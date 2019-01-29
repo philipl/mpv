@@ -5,7 +5,7 @@
 
 #include <libplacebo/common.h>
 
-struct pl_context *mppl_ctx_create(void *tactx, struct mp_log *log);
+void mppl_ctx_set_log(struct pl_context *ctx, struct mp_log *log, bool probing);
 
 static inline struct pl_rect2d mp_rect2d_to_pl(struct mp_rect rc)
 {
