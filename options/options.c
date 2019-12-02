@@ -85,6 +85,7 @@ extern const struct m_sub_options ao_conf;
 
 extern const struct m_sub_options opengl_conf;
 extern const struct m_sub_options vulkan_conf;
+extern const struct m_sub_options vulkan_display_conf;
 extern const struct m_sub_options spirv_conf;
 extern const struct m_sub_options d3d11_conf;
 extern const struct m_sub_options d3d11va_conf;
@@ -730,6 +731,7 @@ static const m_option_t mp_opts[] = {
 
 #if HAVE_VULKAN
     OPT_SUBSTRUCT("", vulkan_opts, vulkan_conf, 0),
+    OPT_SUBSTRUCT("", vulkan_display_opts, vulkan_display_conf, 0),
 #endif
 
 #if HAVE_D3D11
