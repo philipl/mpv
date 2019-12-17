@@ -15,10 +15,15 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "options/m_config.h"
-
 #include "context.h"
+#include "options/m_config.h"
 #include "utils.h"
+
+#if HAVE_DRM
+#include "libmpv/render_gl.h"
+#include "osdep/timer.h"
+#include "video/out/drm_common.h"
+#endif
 
 struct vulkan_display_opts {
     char *display_spec;
@@ -262,7 +267,82 @@ struct priv {
     struct vulkan_display_opts *opts;
     uint32_t width;
     uint32_t height;
+
+#if HAVE_DRM
+    drmModeCrtc *old_crtc;
+
+    bool vt_switcher_active;
+    struct vt_switcher vt_switcher;
+
+    struct mpv_opengl_drm_params_v2 drm_params;
+#endif
 };
+
+#if HAVE_DRM
+static void crtc_save(struct ra_ctx *ctx)
+{
+    struct priv *p = ctx->priv;
+
+    struct kms *kms = kms_create(ctx->log,
+                                 ctx->vo->opts->drm_opts->drm_connector_spec,
+                                 ctx->vo->opts->drm_opts->drm_mode_spec,
+                                 ctx->vo->opts->drm_opts->drm_draw_plane,
+                                 ctx->vo->opts->drm_opts->drm_drmprime_video_plane,
+                                 ctx->vo->opts->drm_opts->drm_atomic);
+    if (!kms) {
+        MP_WARN(ctx, "Failed to create KMS to save old crtc mode.\n");
+        return;
+    }
+
+    p->old_crtc = drmModeGetCrtc(kms->fd, kms->crtc_id);
+    if (!p->old_crtc) {
+        MP_WARN(ctx, "Failed to save old crtc mode.\n");
+    }
+
+    kms_destroy(kms);
+}
+
+static void crtc_release(struct ra_ctx *ctx)
+{
+    struct priv *p = ctx->priv;
+
+    if (p->old_crtc) {
+        struct kms *kms = kms_create(ctx->log,
+                                    ctx->vo->opts->drm_opts->drm_connector_spec,
+                                    ctx->vo->opts->drm_opts->drm_mode_spec,
+                                    ctx->vo->opts->drm_opts->drm_draw_plane,
+                                    ctx->vo->opts->drm_opts->drm_drmprime_video_plane,
+                                    ctx->vo->opts->drm_opts->drm_atomic);
+        if (!kms) {
+            MP_WARN(ctx, "Failed to create KMS to restore old crtc mode.\n");
+            return;
+        }
+
+        int ret = drmModeSetCrtc(kms->fd,
+                        p->old_crtc->crtc_id, p->old_crtc->buffer_id,
+                        p->old_crtc->x, p->old_crtc->y,
+                        &kms->connector->connector_id, 1,
+                        &p->old_crtc->mode);
+        drmModeFreeCrtc(p->old_crtc);
+        if (ret != 0) {
+            MP_WARN(ctx, "Failed to restore old crtc mode.\n");
+        }
+        p->old_crtc = NULL;
+
+        kms_destroy(kms);
+    }
+}
+
+static void release_vt(void *data)
+{
+    // TODO: Anything? crtc_save/restore doesn't work.
+}
+
+static void acquire_vt(void *data)
+{
+    // TODO: Anything? crtc_save/restore doesn't work.
+}
+#endif
 
 static void display_uninit(struct ra_ctx *ctx)
 {
@@ -270,6 +350,13 @@ static void display_uninit(struct ra_ctx *ctx)
 
     ra_vk_ctx_uninit(ctx);
     mpvk_uninit(&p->vk);
+
+#if HAVE_DRM
+    crtc_release(ctx);
+
+    if (p->vt_switcher_active)
+        vt_switcher_destroy(&p->vt_switcher);
+#endif
 }
 
 static bool display_init(struct ra_ctx *ctx)
@@ -287,6 +374,18 @@ static bool display_init(struct ra_ctx *ctx)
     int display_idx, mode_idx, plane_idx;
     parse_display_spec(ctx->log, p->opts->display_spec,
                        &display_idx, &mode_idx, &plane_idx);
+
+#if HAVE_DRM
+    p->vt_switcher_active = vt_switcher_init(&p->vt_switcher, ctx->vo->log);
+    if (p->vt_switcher_active) {
+        vt_switcher_acquire(&p->vt_switcher, acquire_vt, ctx);
+        vt_switcher_release(&p->vt_switcher, release_vt, ctx);
+    } else {
+        MP_WARN(ctx, "Failed to set up VT switcher. Terminal switching will be unavailable.\n");
+    }
+
+    crtc_save(ctx);
+#endif
 
     if (!mpvk_init(vk, ctx, VK_KHR_DISPLAY_EXTENSION_NAME))
         goto error;
@@ -403,12 +502,27 @@ static int display_control(struct ra_ctx *ctx, int *events, int request, void *a
 
 static void display_wakeup(struct ra_ctx *ctx)
 {
-    // TODO
+#if HAVE_DRM
+    struct priv *p = ctx->priv;
+    if (p->vt_switcher_active)
+        vt_switcher_interrupt_poll(&p->vt_switcher);
+#endif
 }
 
 static void display_wait_events(struct ra_ctx *ctx, int64_t until_time_us)
 {
-    // TODO
+#if HAVE_DRM
+    struct priv *p = ctx->priv;
+    if (p->vt_switcher_active) {
+        int64_t wait_us = until_time_us - mp_time_us();
+        int timeout_ms = MPCLAMP((wait_us + 500) / 1000, 0, 10000);
+        vt_switcher_poll(&p->vt_switcher, timeout_ms);
+    } else {
+#else
+    {
+#endif
+        vo_wait_default(ctx->vo, until_time_us);
+    }
 }
 
 const struct ra_ctx_fns ra_ctx_vulkan_display = {
