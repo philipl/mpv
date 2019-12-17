@@ -15,10 +15,24 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "options/m_config.h"
-
 #include "context.h"
+#include "options/m_config.h"
 #include "utils.h"
+
+#if HAVE_DRM
+#include <fcntl.h>
+#include <unistd.h>
+
+#include "libmpv/render_gl.h"
+#include "osdep/timer.h"
+#include "video/out/drm_common.h"
+#endif
+
+#if HAVE_X11
+#include "video/out/x11_common.h"
+#include <X11/extensions/Xrandr.h>
+#include <vulkan/vulkan_xlib_xrandr.h>
+#endif
 
 struct vulkan_display_opts {
     char *display_spec;
@@ -258,11 +272,178 @@ const struct m_sub_options vulkan_display_conf = {
 };
 
 struct priv {
+    VkDisplayKHR display;
     struct mpvk_ctx vk;
     struct vulkan_display_opts *opts;
     uint32_t width;
     uint32_t height;
+
+#if HAVE_DRM
+    char *card_path;
+    drmModeCrtc *old_crtc;
+
+    bool vt_switcher_active;
+    struct vt_switcher vt_switcher;
+
+    struct mpv_opengl_drm_params_v2 drm_params;
+#endif
 };
+
+#if HAVE_DRM
+static bool open_render_fd(struct ra_ctx *ctx, int kms_fd)
+{
+    struct priv *p = ctx->priv;
+    p->drm_params.fd = -1;
+    p->drm_params.render_fd = -1;
+
+    char *render_path = drmGetRenderDeviceNameFromFd(kms_fd);
+    int fd = open(render_path, O_RDWR | O_CLOEXEC);
+    free(render_path);
+
+    p->drm_params.render_fd = fd;
+    return fd != -1;
+}
+
+static bool drm_setup(struct ra_ctx *ctx, int display_idx,
+                      VkPhysicalDevicePCIBusInfoPropertiesEXT *pci_props)
+{
+    struct priv *p = ctx->priv;
+
+    int fd, card_no = -1;
+    do {
+        int ret;
+        char card_path[128];
+        card_no++;
+        snprintf(card_path, sizeof(card_path),
+                 DRM_DEV_NAME, DRM_DIR_NAME, card_no);
+        fd = open(card_path, O_RDWR | O_CLOEXEC);
+        MP_DBG(ctx, "Opening card: %s | %d\n", card_path, fd);
+        if (fd >= 0) {
+            drmDevicePtr device;
+            ret = drmGetDevice(fd, &device);
+            if (ret == 0 &&
+                device->businfo.pci->domain == pci_props->pciDomain &&
+                device->businfo.pci->bus == pci_props->pciBus &&
+                device->businfo.pci->dev == pci_props->pciDevice &&
+                device->businfo.pci->func == pci_props->pciFunction) {
+                // Found our matching device.
+                MP_DBG(ctx, "Card is matched at %04X:%02X:%02X:%02X\n",
+                       pci_props->pciDomain, pci_props->pciBus,
+                       pci_props->pciDevice, pci_props->pciFunction);
+                p->card_path = talloc_strdup(NULL, card_path);
+                drmFreeDevice(&device);
+                break;
+            }
+            drmFreeDevice(&device);
+            close(fd);
+        }
+    } while (fd >= 0);
+
+    if (fd < 0) {
+        MP_WARN(ctx, "Couldn't find DRM device that matches Vulkan device "
+                     "at: %04X:%02X:%02X:%02X\n",
+                     pci_props->pciDomain, pci_props->pciBus,
+                     pci_props->pciDevice, pci_props->pciFunction);
+        return false;
+    }
+
+    drmModeResPtr res = drmModeGetResources(fd);
+    if (!res) {
+        MP_WARN(ctx, "Failed to get DRM resources\n");
+        goto error;
+    }
+    int connector_id = res->connectors[display_idx];
+    p->drm_params.connector_id = connector_id;
+
+    drmModeConnectorPtr connector = drmModeGetConnector(fd, connector_id);
+    int encoder_id = connector->encoder_id;
+    if (!connector) {
+        MP_WARN(ctx, "Failed to get DRM connector\n");
+        goto error;
+    }
+    drmModeFreeConnector(connector);
+
+    drmModeEncoderPtr encoder = drmModeGetEncoder(fd, encoder_id);
+    int crtc_id = encoder->crtc_id;
+    if (!encoder) {
+        MP_WARN(ctx, "Failed to get DRM encoder\n");
+        goto error;
+    }
+    drmModeFreeEncoder(encoder);
+
+    p->old_crtc = drmModeGetCrtc(fd, crtc_id);
+    if (!p->old_crtc) {
+        MP_WARN(ctx, "Failed to get DRM crtc\n");
+        goto error;
+    }
+
+    open_render_fd(ctx, fd);
+    close(fd);
+
+    return true;
+
+error:
+    close(fd);
+    return false;
+}
+
+static void drm_restore(struct ra_ctx *ctx)
+{
+    struct priv *p = ctx->priv;
+
+    if (p->old_crtc) {
+        int fd = open(p->card_path, O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            MP_WARN(ctx, "Failed to open drm fd to restore old crtc mode.\n");
+            return;
+        }
+
+        int ret = drmModeSetCrtc(fd,
+                        p->old_crtc->crtc_id, p->old_crtc->buffer_id,
+                        p->old_crtc->x, p->old_crtc->y,
+                        &p->drm_params.connector_id, 1,
+                        &p->old_crtc->mode);
+        drmModeFreeCrtc(p->old_crtc);
+        if (ret != 0) {
+            MP_WARN(ctx, "Failed to restore old crtc mode.\n");
+        }
+        close(fd);
+    }
+}
+
+static void acquire_vt(void *data)
+{
+    // TODO: Can anything be done? As long as the vulkan context is active,
+    // we can't make DRM calls to save the display state, and Vulkan doesn't
+    // seem to offer any way to do it.
+}
+
+static void release_vt(void *data)
+{
+    // TODO: See acquire_vt.
+}
+#endif
+
+#if HAVE_X11
+static void acquire_display(struct ra_ctx *ctx, VkPhysicalDevice physdev, VkDevice device) {
+    struct priv *p = ctx->priv;
+    
+    PFN_vkAcquireXlibDisplayEXT pfn =
+        (PFN_vkAcquireXlibDisplayEXT)vkGetInstanceProcAddr(p->vk.vkinst->instance,
+                                                           "vkAcquireXlibDisplayEXT");
+    if (!pfn) {
+        MP_ERR(ctx, "Failed to get pfn for acquiring Display.\n");
+        return;
+    }
+
+    VkResult res = pfn(physdev, ctx->vo->x11->display, p->display);
+    if (res != VK_SUCCESS) {
+        MP_ERR(ctx, "Failed acquiring Display.\n");
+    } else {
+        MP_VERBOSE(ctx, "Acquired Display.\n");
+    }
+}
+#endif
 
 static void display_uninit(struct ra_ctx *ctx)
 {
@@ -270,6 +451,32 @@ static void display_uninit(struct ra_ctx *ctx)
 
     ra_vk_ctx_uninit(ctx);
     mpvk_uninit(&p->vk);
+
+#if HAVE_DRM
+    if (p->vt_switcher_active) {
+        vt_switcher_destroy(&p->vt_switcher);
+        p->vt_switcher_active = false;
+    }
+
+    drm_restore(ctx);
+
+    if (p->drm_params.fd != -1) {
+        close(p->drm_params.fd);
+        p->drm_params.fd = -1;
+    }
+    if (p->drm_params.render_fd != -1) {
+        close(p->drm_params.render_fd);
+        p->drm_params.render_fd = -1;
+    }
+
+    if (p->card_path) {
+        talloc_free(p->card_path);
+        p->card_path = NULL;
+    }
+#endif
+#if HAVE_X11
+    vo_x11_uninit(ctx->vo);
+#endif
 }
 
 static bool display_init(struct ra_ctx *ctx)
@@ -278,7 +485,7 @@ static bool display_init(struct ra_ctx *ctx)
     struct mpvk_ctx *vk = &p->vk;
     int msgl = ctx->opts.probing ? MSGL_V : MSGL_ERR;
     VkResult res;
-    bool ret = false;
+    bool x11 = false, ret = false;
     uint32_t num = 0;
 
     void *tmp = talloc_new(NULL);
@@ -288,7 +495,15 @@ static bool display_init(struct ra_ctx *ctx)
     parse_display_spec(ctx->log, p->opts->display_spec,
                        &display_idx, &mode_idx, &plane_idx);
 
-    if (!mpvk_init(vk, ctx, VK_KHR_DISPLAY_EXTENSION_NAME))
+    const char *extension_name = VK_KHR_DISPLAY_EXTENSION_NAME;
+#if HAVE_X11
+    if (vo_x11_init(ctx->vo)) {
+        extension_name = VK_EXT_ACQUIRE_XLIB_DISPLAY_EXTENSION_NAME;
+        x11 = true;
+    }
+#endif
+
+    if (!mpvk_init(vk, ctx, extension_name))
         goto error;
 
     char *device_name = ra_vk_ctx_get_device_name(ctx);
@@ -301,6 +516,30 @@ static bool display_init(struct ra_ctx *ctx)
     if (!device) {
         MP_MSG(ctx, msgl, "Failed to open physical device.\n");
         goto error;
+    }
+
+    if (!x11) {
+#if HAVE_DRM
+        VkPhysicalDevicePCIBusInfoPropertiesEXT pci_props = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT,
+        };
+        VkPhysicalDeviceProperties2KHR props = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR,
+            .pNext = &pci_props,
+        };
+        vkGetPhysicalDeviceProperties2(device, &props);
+
+        p->vt_switcher_active = vt_switcher_init(&p->vt_switcher, ctx->vo->log);
+        if (p->vt_switcher_active) {
+            vt_switcher_acquire(&p->vt_switcher, acquire_vt, ctx);
+            vt_switcher_release(&p->vt_switcher, release_vt, ctx);
+        } else {
+            MP_WARN(ctx, "Failed to set up VT switcher. Terminal switching will be unavailable.\n");
+        }
+
+        if (!drm_setup(ctx, display_idx, &pci_props))
+            MP_WARN(ctx, "Failed to set up DRM. Old display cannot be restored.");
+#endif
     }
 
     num = 0;
@@ -323,6 +562,7 @@ static bool display_init(struct ra_ctx *ctx)
     }
 
     VkDisplayKHR display = props[display_idx].display;
+    p->display = display;
 
     num = 0;
     vkGetDisplayModePropertiesKHR(device, display, &num, NULL);
@@ -375,9 +615,22 @@ static bool display_init(struct ra_ctx *ctx)
     p->width = mode->parameters.visibleRegion.width;
     p->height = mode->parameters.visibleRegion.height;
 
-    struct ra_vk_ctx_params params = {0};
+    struct ra_vk_ctx_params params = {
+#if HAVE_X11
+        .acquire_display = ctx->vo->x11 ? acquire_display : NULL,
+#endif
+    };
     if (!ra_vk_ctx_init(ctx, vk, params, VK_PRESENT_MODE_FIFO_KHR))
         goto error;
+
+#if HAVE_DRM
+    if (p->drm_params.render_fd > -1) {
+        ra_add_native_resource(ctx->ra, "drm_params_v2", &p->drm_params);
+    } else {
+        MP_WARN(ctx,
+               "Failed to open render fd. VAAPI hwaccel will not be usable.");
+    }
+#endif
 
     ret = true;
 
@@ -403,12 +656,27 @@ static int display_control(struct ra_ctx *ctx, int *events, int request, void *a
 
 static void display_wakeup(struct ra_ctx *ctx)
 {
-    // TODO
+#if HAVE_DRM
+    struct priv *p = ctx->priv;
+    if (p->vt_switcher_active)
+        vt_switcher_interrupt_poll(&p->vt_switcher);
+#endif
 }
 
 static void display_wait_events(struct ra_ctx *ctx, int64_t until_time_us)
 {
-    // TODO
+#if HAVE_DRM
+    struct priv *p = ctx->priv;
+    if (p->vt_switcher_active) {
+        int64_t wait_us = until_time_us - mp_time_us();
+        int timeout_ms = MPCLAMP((wait_us + 500) / 1000, 0, 10000);
+        vt_switcher_poll(&p->vt_switcher, timeout_ms);
+    } else {
+#else
+    {
+#endif
+        vo_wait_default(ctx->vo, until_time_us);
+    }
 }
 
 const struct ra_ctx_fns ra_ctx_vulkan_display = {

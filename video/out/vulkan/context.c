@@ -183,6 +183,10 @@ bool ra_vk_ctx_init(struct ra_ctx *ctx, struct mpvk_ctx *vk,
     if (!ctx->ra)
         goto error;
 
+    if (params.acquire_display) {
+        params.acquire_display(ctx, vk->vulkan->phys_device, vk->vulkan->device);
+    }
+
     // Create the swapchain
     struct pl_vulkan_swapchain_params pl_params = {
         .surface = vk->surface,
