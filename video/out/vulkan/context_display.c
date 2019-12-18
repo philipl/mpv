@@ -28,6 +28,15 @@
 #include "video/out/drm_common.h"
 #endif
 
+#if HAVE_X11
+#include "video/out/drm_common.h"
+#include "video/out/x11_common.h"
+
+#include <X11/extensions/Xrandr.h>
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_xlib_xrandr.h>
+#endif
+
 struct vulkan_display_opts {
     char *display_spec;
 };
@@ -266,6 +275,7 @@ const struct m_sub_options vulkan_display_conf = {
 };
 
 struct priv {
+    VkDisplayKHR display;
     struct mpvk_ctx vk;
     struct vulkan_display_opts *opts;
     uint32_t width;
@@ -381,7 +391,31 @@ static void display_uninit(struct ra_ctx *ctx)
     if (p->vt_switcher_active)
         vt_switcher_destroy(&p->vt_switcher);
 #endif
+#if HAVE_X11
+    vo_x11_uninit(ctx->vo);
+#endif
 }
+
+#if HAVE_X11
+static void acquire_display(struct ra_ctx *ctx, VkPhysicalDevice physdev, VkDevice device) {
+    struct priv *p = ctx->priv;
+    
+    PFN_vkAcquireXlibDisplayEXT pfn =
+        (PFN_vkAcquireXlibDisplayEXT)vkGetInstanceProcAddr(p->vk.vkinst->instance,
+                                                           "vkAcquireXlibDisplayEXT");
+    if (!pfn) {
+        MP_WARN(ctx, "Failed to get pfn for acquiring Display\n");
+        return;
+    }
+
+    VkResult res = pfn(physdev, ctx->vo->x11->display, p->display);
+    if (res != VK_SUCCESS) {
+        MP_WARN(ctx, "Failed acquiring Display\n");
+    } else {
+        MP_WARN(ctx, "Acquiring Display\n");
+    }
+}
+#endif
 
 static bool display_init(struct ra_ctx *ctx)
 {
@@ -399,19 +433,28 @@ static bool display_init(struct ra_ctx *ctx)
     parse_display_spec(ctx->log, p->opts->display_spec,
                        &display_idx, &mode_idx, &plane_idx);
 
-#if HAVE_DRM
-    p->vt_switcher_active = vt_switcher_init(&p->vt_switcher, ctx->vo->log);
-    if (p->vt_switcher_active) {
-        vt_switcher_acquire(&p->vt_switcher, acquire_vt, ctx);
-        vt_switcher_release(&p->vt_switcher, release_vt, ctx);
+    const char *extension_name = VK_KHR_DISPLAY_EXTENSION_NAME;
+#if HAVE_X11
+    if (vo_x11_init(ctx->vo)) {
+        extension_name = VK_EXT_ACQUIRE_XLIB_DISPLAY_EXTENSION_NAME;
     } else {
-        MP_WARN(ctx, "Failed to set up VT switcher. Terminal switching will be unavailable.\n");
-    }
+#endif
+#if HAVE_DRM
+        p->vt_switcher_active = vt_switcher_init(&p->vt_switcher, ctx->vo->log);
+        if (p->vt_switcher_active) {
+            vt_switcher_acquire(&p->vt_switcher, acquire_vt, ctx);
+            vt_switcher_release(&p->vt_switcher, release_vt, ctx);
+        } else {
+            MP_WARN(ctx, "Failed to set up VT switcher. Terminal switching will be unavailable.\n");
+        }
 
-    crtc_save(ctx);
+        crtc_save(ctx);
+#endif
+#if HAVE_X11
+    }
 #endif
 
-    if (!mpvk_init(vk, ctx, VK_KHR_DISPLAY_EXTENSION_NAME))
+    if (!mpvk_init(vk, ctx, extension_name))
         goto error;
 
     char *device_name = ra_vk_ctx_get_device_name(ctx);
@@ -446,6 +489,7 @@ static bool display_init(struct ra_ctx *ctx)
     }
 
     VkDisplayKHR display = props[display_idx].display;
+    p->display = display;
 
     num = 0;
     vkGetDisplayModePropertiesKHR(device, display, &num, NULL);
@@ -498,7 +542,11 @@ static bool display_init(struct ra_ctx *ctx)
     p->width = mode->parameters.visibleRegion.width;
     p->height = mode->parameters.visibleRegion.height;
 
-    struct ra_vk_ctx_params params = {0};
+    struct ra_vk_ctx_params params = {
+#if HAVE_X11
+        .acquire_display = ctx->vo->x11 ? acquire_display : NULL,
+#endif
+    };
     if (!ra_vk_ctx_init(ctx, vk, params, VK_PRESENT_MODE_FIFO_KHR))
         goto error;
 

@@ -13,6 +13,8 @@ bool mpvk_init(struct mpvk_ctx *vk, struct ra_ctx *ctx, const char *surface_ext)
 
     const char *exts[] = {
         VK_KHR_SURFACE_EXTENSION_NAME,
+        VK_KHR_DISPLAY_EXTENSION_NAME,
+        VK_EXT_DIRECT_MODE_DISPLAY_EXTENSION_NAME,
         surface_ext,
     };
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vulkan/vulkan.h>
+
 #include "video/out/gpu/context.h"
 #include "common.h"
 
@@ -12,6 +14,8 @@ struct ra_vk_ctx_params {
 
     // In case something special needs to be done on the buffer swap.
     void (*swap_buffers)(struct ra_ctx *ctx);
+
+    void (*acquire_display)(struct ra_ctx *ctx, VkPhysicalDevice physdev, VkDevice device);
 };
 
 // Helpers for ra_ctx based on ra_vk. These initialize ctx->ra and ctx->swchain.
