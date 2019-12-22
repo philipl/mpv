@@ -15,6 +15,9 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "libmpv/render_gl.h"
 #include "options/m_config.h"
 #include "osdep/timer.h"
@@ -274,6 +277,20 @@ struct priv {
     struct mpv_opengl_drm_params_v2 drm_params;
 };
 
+static bool open_render_fd(struct ra_ctx *ctx, int kms_fd)
+{
+    struct priv *p = ctx->priv;
+    p->drm_params.fd = -1;
+    p->drm_params.render_fd = -1;
+
+    char *render_path = drmGetRenderDeviceNameFromFd(kms_fd);
+    int fd = open(render_path, O_RDWR | O_CLOEXEC);
+    free(render_path);
+
+    p->drm_params.render_fd = fd;
+    return fd != -1;
+}
+
 static void crtc_save(struct ra_ctx *ctx)
 {
     struct priv *p = ctx->priv;
@@ -293,6 +310,8 @@ static void crtc_save(struct ra_ctx *ctx)
     if (!p->old_crtc) {
         MP_WARN(ctx, "Failed to save old crtc mode.\n");
     }
+
+    open_render_fd(ctx, kms->fd);
 
     kms_destroy(kms);
 }
@@ -344,6 +363,11 @@ static void display_uninit(struct ra_ctx *ctx)
 
     ra_vk_ctx_uninit(ctx);
     mpvk_uninit(&p->vk);
+
+    if (p->drm_params.fd != -1)
+        close(p->drm_params.fd);
+    if (p->drm_params.render_fd != -1)
+        close(p->drm_params.render_fd);
 
     crtc_release(ctx);
 
@@ -467,6 +491,8 @@ static bool display_init(struct ra_ctx *ctx)
     struct ra_vk_ctx_params params = {0};
     if (!ra_vk_ctx_init(ctx, vk, params, VK_PRESENT_MODE_FIFO_KHR))
         goto error;
+
+    ra_add_native_resource(ctx->ra, "drm_params_v2", &p->drm_params);
 
     ret = true;
 
