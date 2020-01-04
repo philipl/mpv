@@ -282,6 +282,7 @@ struct priv {
     uint32_t height;
 
 #if HAVE_DRM
+    int connector_id;
     drmModeCrtc *old_crtc;
 
     bool vt_switcher_active;
@@ -304,6 +305,89 @@ static bool open_render_fd(struct ra_ctx *ctx, int kms_fd)
 
     p->drm_params.render_fd = fd;
     return fd != -1;
+}
+
+static bool kms_setup(struct ra_ctx *ctx, int display_idx)
+{
+    struct priv *p = ctx->priv;
+    //const struct pl_gpu_pci_address *pci = &p->vk.gpu->pci;
+    struct pl_gpu_pci_address dummy = {
+        .domain = 0,
+        .bus = 0,
+        .device = 2,
+        .function = 0,
+    };
+    const struct pl_gpu_pci_address *pci = &dummy;
+
+    int fd, card_no = -1;
+    do {
+        int ret;
+        char card_path[128];
+        card_no++;
+        snprintf(card_path, sizeof(card_path),
+                 DRM_DEV_NAME, DRM_DIR_NAME, card_no);
+        fd = open(card_path, O_RDWR | O_CLOEXEC);
+        MP_INFO(ctx, "Opening card: %s | %d\n", card_path, fd);
+        if (fd >= 0) {
+            drmDevicePtr device;
+            ret = drmGetDevice(fd, &device);
+            if (ret == 0 &&
+                device->businfo.pci->domain == pci->domain &&
+                device->businfo.pci->bus == pci->bus &&
+                device->businfo.pci->dev == pci->device &&
+                device->businfo.pci->func == pci->function) {
+                // Found our matching device.
+                MP_INFO(ctx, "Card is matched\n");
+                drmFreeDevice(&device);
+                break;
+            }
+            drmFreeDevice(&device);
+            close(fd);
+        }
+    } while (fd >= 0);
+
+    if (fd < 0) {
+        MP_WARN(ctx, "Couldn't find DRM device that matches VUlkan device.\n");
+        return false;
+    }
+
+    drmModeResPtr res = drmModeGetResources(fd);
+    if (!res) {
+        MP_WARN(ctx, "Failed to get DRM resources\n");
+        goto error;
+    }
+    int connector_id = res->connectors[display_idx];
+
+    drmModeConnectorPtr connector = drmModeGetConnector(fd, connector_id);
+    int encoder_id = connector->encoder_id;
+    if (!connector) {
+        MP_WARN(ctx, "Failed to get DRM connector\n");
+        goto error;
+    }
+    drmModeFreeConnector(connector);
+
+    drmModeEncoderPtr encoder = drmModeGetEncoder(fd, encoder_id);
+    int crtc_id = encoder->crtc_id;
+    if (!encoder) {
+        MP_WARN(ctx, "Failed to get DRM encoder\n");
+        goto error;
+    }
+    drmModeFreeEncoder(encoder);
+
+    p->old_crtc = drmModeGetCrtc(fd, crtc_id);
+    if (!p->old_crtc) {
+        MP_WARN(ctx, "Failed to get DRM crtc\n");
+        goto error;
+    }
+
+    open_render_fd(ctx, fd);
+    close(fd);
+
+    return true;
+
+error:
+    close(fd);
+    return false;
 }
 
 static void crtc_save(struct ra_ctx *ctx)
@@ -448,7 +532,9 @@ static bool display_init(struct ra_ctx *ctx)
             MP_WARN(ctx, "Failed to set up VT switcher. Terminal switching will be unavailable.\n");
         }
 
-        crtc_save(ctx);
+        //crtc_save(ctx);
+        kms_setup(ctx, display_idx);
+        p->connector_id = display_idx;
 #endif
 #if HAVE_X11
     }
