@@ -26,8 +26,8 @@ struct gl_video_opts;
 
 struct gpu_ctx {
     struct mp_log *log;
-
     struct ra_ctx *ra_ctx;
+    struct ra *ra_pl; // may differ from `ra_ctx->ra` for non-vulkan APIs
 
     pl_log pllog;
     pl_gpu gpu;

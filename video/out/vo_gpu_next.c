@@ -36,6 +36,7 @@
 #include "video/fmt-conversion.h"
 #include "placebo/utils.h"
 #include "gpu/context.h"
+#include "gpu/hwdec.h"
 #include "gpu/video.h"
 #include "gpu/video_shaders.h"
 #include "sub/osd.h"
@@ -75,6 +76,9 @@ struct priv {
     struct mpv_global *global;
     struct ra_ctx *ra_ctx;
     struct gpu_ctx *context;
+
+    struct ra_hwdec **hwdecs;
+    int num_hwdecs;
 
     pl_log pllog;
     pl_gpu gpu;
@@ -306,6 +310,7 @@ struct frame_priv {
     struct vo *vo;
     struct osd_state subs;
     uint64_t osd_sync;
+    struct ra_hwdec_mapper *hwdec_mapper;
 };
 
 static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
@@ -447,13 +452,10 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
     struct mp_image *mpi = src->frame_data;
     const struct mp_image_params *par = &mpi->params;
     struct frame_priv *fp = mpi->priv;
-    struct pl_plane_data data[4] = {0};
     struct vo *vo = fp->vo;
     struct priv *p = vo->priv;
 
-    // TODO: implement support for hwdec wrappers
     *frame = (struct pl_frame) {
-        .num_planes = mpi->num_planes,
         .color = get_mpi_csp(vo, mpi),
         .repr = {
             .sys = mp_csp_to_pl(par->color.space),
@@ -485,42 +487,87 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
     default: break;
     }
 
-    enum pl_chroma_location chroma = mp_chroma_to_pl(par->chroma_location);
-    int planes = plane_data_from_imgfmt(data, &frame->repr.bits, mpi->imgfmt);
-    for (int n = 0; n < planes; n++) {
-        struct pl_plane *plane = &frame->planes[n];
-        data[n].width = mp_image_plane_w(mpi, n);
-        data[n].height = mp_image_plane_h(mpi, n);
-        if (mpi->stride[n] < 0) {
-            data[n].pixels = mpi->planes[n] + (data[n].height - 1) * mpi->stride[n];
-            data[n].row_stride = -mpi->stride[n];
-            plane->flipped = true;
-        } else {
-            data[n].pixels = mpi->planes[n];
-            data[n].row_stride = mpi->stride[n];
+    struct ra_hwdec *hwdec = NULL;
+    for (int n = 0; n < p->num_hwdecs; n++) {
+        if (ra_hwdec_test_format(p->hwdecs[n], mpi->imgfmt)) {
+            hwdec = p->hwdecs[n];
+            break;
         }
+    }
 
-        pl_buf buf = get_dr_buf(mpi);
-        if (buf) {
-            data[n].buf = buf;
-            data[n].buf_offset = (uint8_t *) data[n].pixels - buf->data;
-            data[n].pixels = NULL;
-        } else if (gpu->limits.callbacks) {
-            data[n].callback = talloc_free;
-            data[n].priv = mp_image_new_ref(mpi);
-        }
-
-        if (!pl_upload_plane(gpu, plane, &tex[n], &data[n])) {
-            MP_ERR(vo, "Failed uploading frame!\n");
-            talloc_free(data[n].priv);
+    if (hwdec) {
+        fp->hwdec_mapper = ra_hwdec_mapper_create(hwdec, &mpi->params);
+        if (!fp->hwdec_mapper) {
+            MP_ERR(p, "Initializing texture for hardware decoding failed.\n");
             return false;
         }
 
-        if (mpi->fmt.xs[n] || mpi->fmt.ys[n]) {
-            pl_chroma_location_offset(chroma, &plane->shift_x, &plane->shift_y);
-            plane->shift_y = -plane->shift_y;
+        if (ra_hwdec_mapper_map(fp->hwdec_mapper, mpi) < 0) {
+            MP_ERR(p, "Mapping hardware decoded surface failed.\n");
+            ra_hwdec_mapper_free(&fp->hwdec_mapper);
+            return false;
+        }
+
+        struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(par->hw_subfmt);
+        frame->num_planes = desc.num_planes;
+        for (int n = 0; n < frame->num_planes; n++) {
+            struct pl_plane *plane = &frame->planes[n];
+            struct ra_tex *ra_tex = fp->hwdec_mapper->tex[n];
+            plane->texture = (pl_tex) ra_tex->priv;
+
+            int *map = plane->component_mapping;
+            for (int c = 0; c < mp_imgfmt_desc_get_num_comps(&desc); c++) {
+                if (desc.comps[c].plane != n)
+                    continue;
+
+                // Sort by component offset
+                uint8_t offset = desc.comps[c].offset;
+                int index = plane->components++;
+                while (index > 0 && desc.comps[map[index - 1]].offset > offset) {
+                    map[index] = map[index - 1];
+                    index--;
+                }
+                map[index] = c;
+            }
+        }
+
+    } else { // swdec
+
+        struct pl_plane_data data[4] = {0};
+        frame->num_planes = plane_data_from_imgfmt(data, &frame->repr.bits, mpi->imgfmt);
+        for (int n = 0; n < frame->num_planes; n++) {
+            struct pl_plane *plane = &frame->planes[n];
+            data[n].width = mp_image_plane_w(mpi, n);
+            data[n].height = mp_image_plane_h(mpi, n);
+            if (mpi->stride[n] < 0) {
+                data[n].pixels = mpi->planes[n] + (data[n].height - 1) * mpi->stride[n];
+                data[n].row_stride = -mpi->stride[n];
+                plane->flipped = true;
+            } else {
+                data[n].pixels = mpi->planes[n];
+                data[n].row_stride = mpi->stride[n];
+            }
+
+            pl_buf buf = get_dr_buf(mpi);
+            if (buf) {
+                data[n].buf = buf;
+                data[n].buf_offset = (uint8_t *) data[n].pixels - buf->data;
+                data[n].pixels = NULL;
+            } else if (gpu->limits.callbacks) {
+                data[n].callback = talloc_free;
+                data[n].priv = mp_image_new_ref(mpi);
+            }
+
+            if (!pl_upload_plane(gpu, plane, &tex[n], &data[n])) {
+                MP_ERR(vo, "Failed uploading frame!\n");
+                talloc_free(data[n].priv);
+                return false;
+            }
         }
     }
+
+    // Update chroma location, must be done after initializing planes
+    pl_frame_set_chroma_location(frame, mp_chroma_to_pl(par->chroma_location));
 
 #ifdef PL_HAVE_LAV_DOLBY_VISION
     if (mpi->dovi) {
@@ -558,6 +605,10 @@ static void unmap_frame(pl_gpu gpu, struct pl_frame *frame,
     struct mp_image *mpi = src->frame_data;
     struct frame_priv *fp = mpi->priv;
     struct priv *p = fp->vo->priv;
+    if (fp->hwdec_mapper) {
+        ra_hwdec_mapper_unmap(fp->hwdec_mapper);
+        ra_hwdec_mapper_free(&fp->hwdec_mapper);
+    }
     for (int i = 0; i < MP_ARRAY_SIZE(fp->subs.entries); i++) {
         pl_tex tex = fp->subs.entries[i].tex;
         if (tex)
@@ -839,6 +890,11 @@ static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
 static int query_format(struct vo *vo, int format)
 {
     struct priv *p = vo->priv;
+    for (int n = 0; n < p->num_hwdecs; n++) {
+        if (ra_hwdec_test_format(p->hwdecs[n], format))
+            return true;
+    }
+
     struct pl_bit_encoding bits;
     struct pl_plane_data data[4] = {0};
     int planes = plane_data_from_imgfmt(data, &bits, format);
@@ -1139,6 +1195,12 @@ static void uninit(struct vo *vo)
     for (int i = 0; i < p->num_user_hooks; i++)
         pl_mpv_user_shader_destroy(&p->user_hooks[i].hook);
 
+    if (vo->hwdec_devs) {
+        for (int n = 0; n < p->num_hwdecs; n++)
+            ra_hwdec_uninit(p->hwdecs[n]);
+        hwdec_devices_destroy(vo->hwdec_devs);
+    }
+
     char *cache_file = get_cache_file(p);
     if (cache_file) {
         FILE *cache = fopen(cache_file, "wb");
@@ -1162,6 +1224,21 @@ static void uninit(struct vo *vo)
     gpu_ctx_destroy(&p->context);
 }
 
+static void load_all_hwdecs(struct priv *p, struct mp_hwdec_devices *devs)
+{
+    for (int n = 0; ra_hwdec_drivers[n]; n++) {
+        // Cannot easily support these currently
+        if (ra_hwdec_drivers[n]->overlay_frame)
+            continue;
+
+        struct ra_hwdec *hwdec =
+            ra_hwdec_load_driver(p->context->ra_pl, p->log, p->global,
+                                 devs, ra_hwdec_drivers[n], true);
+        if (hwdec)
+            MP_TARRAY_APPEND(p, p->hwdecs, p->num_hwdecs, hwdec);
+    }
+}
+
 static int preinit(struct vo *vo)
 {
     struct priv *p = vo->priv;
@@ -1171,7 +1248,6 @@ static int preinit(struct vo *vo)
     p->log = vo->log;
 
     struct gl_video_opts *gl_opts = p->opts_cache->opts;
-
     p->context = gpu_ctx_create(vo, gl_opts);
     if (!p->context)
         goto err_out;
@@ -1180,6 +1256,11 @@ static int preinit(struct vo *vo)
     p->pllog = p->context->pllog;
     p->gpu = p->context->gpu;
     p->sw = p->context->swapchain;
+
+    if (!gl_opts->hwdec_interop || strcmp(gl_opts->hwdec_interop, "no") != 0) {
+        vo->hwdec_devs = hwdec_devices_create();
+        load_all_hwdecs(p, vo->hwdec_devs);
+    }
 
     p->rr = pl_renderer_create(p->pllog, p->gpu);
     p->queue = pl_queue_create(p->gpu);

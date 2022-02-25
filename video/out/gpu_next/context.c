@@ -31,6 +31,7 @@
 #include "options/m_config.h"
 #include "video/out/placebo/utils.h"
 #include "video/out/gpu/video.h"
+#include "video/out/placebo/ra_pl.h"
 
 #if HAVE_D3D11
 #include "osdep/windows_utils.h"
@@ -49,6 +50,14 @@
 #if HAVE_VULKAN
 #include "video/out/vulkan/context.h"
 #endif
+
+static void copy_native_resources(struct ra *dst, const struct ra *src)
+{
+    assert(!dst->num_native_resources);
+    dst->num_native_resources = src->num_native_resources;
+    dst->native_resources = talloc_memdup(dst, src->native_resources,
+            sizeof(*src->native_resources) * src->num_native_resources);
+}
 
 #if HAVE_D3D11
 static bool d3d11_pl_init(struct vo *vo, struct gpu_ctx *ctx,
@@ -95,6 +104,11 @@ static bool d3d11_pl_init(struct vo *vo, struct gpu_ctx *ctx,
         goto err_out;
     }
 
+    ctx->ra_pl = ra_create_pl(d3d11->gpu, ctx->log);
+    if (!ctx->ra_pl)
+        goto err_out;
+    copy_native_resources(ctx->ra_pl, ctx->ra_ctx->ra);
+
     success = true;
 
 err_out:
@@ -120,6 +134,7 @@ struct gpu_ctx *gpu_ctx_create(struct vo *vo, struct gl_video_opts *gl_opts)
 #if HAVE_VULKAN
     struct mpvk_ctx *vkctx = ra_vk_ctx_get(ctx->ra_ctx);
     if (vkctx) {
+        ctx->ra_pl = ctx->ra_ctx->ra;
         ctx->pllog = vkctx->pllog;
         ctx->gpu = vkctx->gpu;
         ctx->swapchain = vkctx->swapchain;
@@ -166,6 +181,11 @@ struct gpu_ctx *gpu_ctx_create(struct vo *vo, struct gl_video_opts *gl_opts)
         if (!ctx->swapchain)
             goto err_out;
 
+        ctx->ra_pl = ra_create_pl(opengl->gpu, ctx->log);
+        if (!ctx->ra_pl)
+            goto err_out;
+        copy_native_resources(ctx->ra_pl, ctx->ra_ctx->ra);
+
         return ctx;
     }
 #elif HAVE_GL
@@ -208,6 +228,9 @@ void gpu_ctx_destroy(struct gpu_ctx **ctxp)
 
     if (ctx->swapchain)
         pl_swapchain_destroy(&ctx->swapchain);
+
+    if (ctx->ra_pl != ctx->ra_ctx->ra)
+        ctx->ra_pl->fns->destroy(ctx->ra_pl);
 
     if (ctx->gpu) {
 #if HAVE_GL && defined(PL_HAVE_OPENGL)
