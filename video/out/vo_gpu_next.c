@@ -1281,7 +1281,7 @@ static int preinit(struct vo *vo)
     // Request as many frames as possible from the decoder. This is not really
     // wasteful since we pass these through libplacebo's frame queueing
     // mechanism, which only uploads frames on an as-needed basis.
-    vo_set_queue_params(vo, 0, VO_MAX_REQ_FRAMES);
+    // vo_set_queue_params(vo, 0, VO_MAX_REQ_FRAMES);
     update_render_options(p);
     return 0;
 

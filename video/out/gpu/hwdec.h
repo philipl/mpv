@@ -68,6 +68,11 @@ struct ra_hwdec_mapper_driver {
     int (*map)(struct ra_hwdec_mapper *mapper);
     // Unmap the frame. Does nothing if already unmapped. Optional.
     void (*unmap)(struct ra_hwdec_mapper *mapper);
+
+    // Some hwdecs actually do a copy when they map a frame. If we know this,
+    // we can release the frame immediately after the map instead of holding
+    // it until the unmap happens.
+    bool map_is_a_copy;
 };
 
 struct ra_hwdec_driver {

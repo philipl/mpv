@@ -186,7 +186,9 @@ void ra_hwdec_mapper_unmap(struct ra_hwdec_mapper *mapper)
 {
     if (mapper->driver->unmap)
         mapper->driver->unmap(mapper);
-    mp_image_unrefp(&mapper->src);
+    if (!mapper->driver->map_is_a_copy) {
+        mp_image_unrefp(&mapper->src);
+    }
 }
 
 int ra_hwdec_mapper_map(struct ra_hwdec_mapper *mapper, struct mp_image *img)
@@ -196,6 +198,9 @@ int ra_hwdec_mapper_map(struct ra_hwdec_mapper *mapper, struct mp_image *img)
     if (mapper->driver->map(mapper) < 0) {
         ra_hwdec_mapper_unmap(mapper);
         return -1;
+    }
+    if (mapper->driver->map_is_a_copy) {
+        mp_image_unrefp(&mapper->src);
     }
     return 0;
 }

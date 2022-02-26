@@ -273,5 +273,6 @@ const struct ra_hwdec_driver ra_hwdec_cuda = {
         .uninit = mapper_uninit,
         .map = mapper_map,
         .unmap = mapper_unmap,
+        .map_is_a_copy = true,
     },
 };
