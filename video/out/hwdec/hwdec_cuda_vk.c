@@ -294,8 +294,10 @@ bool cuda_vk_init(const struct ra_hwdec *hw) {
         return false;
     }
 
-    if (!cu->cuImportExternalMemory) {
-        MP_MSG(hw, level, "CUDA hwdec with Vulkan requires driver version 410.48 or newer.\n");
+    int driverVersion = 0;
+    cu->cuDriverGetVersion(&driverVersion);
+    if (driverVersion < 11020) {
+        MP_MSG(hw, level, "CUDA hwdec with Vulkan requires driver version 460.27.04 or newer.\n");
         return false;
     }
 
