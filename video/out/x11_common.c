@@ -1603,6 +1603,10 @@ static void vo_x11_map_window(struct vo *vo, struct mp_rect rc)
     vo_x11_move_resize(vo, true, true, rc);
     vo_x11_decoration(vo, x11->opts->border);
 
+    long value = true;
+    XChangeProperty(x11->display, x11->window, XA(x11, _VARIABLE_REFRESH),
+                    XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&value, 1);
+
     if (x11->opts->fullscreen && (x11->wm_type & vo_wm_FULLSCREEN)) {
         Atom state = XA(x11, _NET_WM_STATE_FULLSCREEN);
         XChangeProperty(x11->display, x11->window, XA(x11, _NET_WM_STATE), XA_ATOM,
