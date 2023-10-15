@@ -291,8 +291,36 @@ static bool probe_formats(struct mp_filter *f, int hw_imgfmt, bool use_conversio
         if (!cur->av_device_ref)
             continue;
         cstr = av_hwdevice_get_hwframe_constraints(cur->av_device_ref, NULL);
-        if (!cstr)
-            continue;
+        if (!cstr) {
+            /*
+             * Some hwcontexts do not implement constraints, and so cannot
+             * report supported formats, so cobble something together from our
+             * static metadata.
+             */
+            cstr = av_malloc(sizeof(AVHWFramesConstraints));
+
+            cstr->valid_hw_formats =
+                av_malloc_array(2, sizeof(*cstr->valid_hw_formats));
+            if (!cstr->valid_hw_formats)
+                break;
+            cstr->valid_hw_formats[0] = imgfmt2pixfmt(hw_imgfmt);
+            cstr->valid_hw_formats[1] = AV_PIX_FMT_NONE;
+
+            int num_sw_formats;
+            for (num_sw_formats = 0;
+                    cur->supported_formats[num_sw_formats] != 0;
+                    num_sw_formats++);
+
+            cstr->valid_sw_formats =
+                av_malloc_array(num_sw_formats + 1,
+                                sizeof(*cstr->valid_sw_formats));
+            if (!cstr->valid_sw_formats)
+                break;
+            for (int i = 0; i < num_sw_formats; i++) {
+                cstr->valid_sw_formats[i] = imgfmt2pixfmt(cur->supported_formats[i]);
+            }
+            cstr->valid_sw_formats[num_sw_formats] = AV_PIX_FMT_NONE;
+        }
         bool found = false;
         for (int i = 0; cstr->valid_hw_formats &&
                         cstr->valid_hw_formats[i] != AV_PIX_FMT_NONE; i++)
@@ -395,7 +423,8 @@ static bool probe_formats(struct mp_filter *f, int hw_imgfmt, bool use_conversio
                 }
             }
 
-            enum AVPixelFormat *fmts = conversion_cstr->valid_sw_formats;
+            enum AVPixelFormat *fmts = conversion_cstr ?
+                                       conversion_cstr->valid_sw_formats : NULL;
             MP_DBG(f, "  supports:");
             for (int i = 0; fmts && fmts[i] != AV_PIX_FMT_NONE; i++) {
                 int fmt = pixfmt2imgfmt(fmts[i]);
